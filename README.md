@@ -9,17 +9,27 @@ From a functional perspective, Leadalong enables both cooperative and competitiv
 <details>
 <summary>Groups</summary>
 
-The Leadalong.Groups module can be expanded to support structured shared navigation objects and competitive multi-mode racing logic while staying within Connect IQ constraints. The group_waypoint, group_route, and group_track capabilities extend the shared state model so that navigation artifacts are distributed to members and synchronized periodically. Waypoints represent discrete geographic targets, routes represent ordered waypoint paths, and group tracking maintains a lightweight position table that can be used to compute spread, pacing, and compliance relative to leader-defined objectives. Because Connect IQ networking is constrained, synchronization would typically occur through paired phone relay or periodic peer messaging, with compressed state payloads and timestamp validation to prevent stale updates.
+Leadalong.Groups combines the original 25 coordination and management functions with the additional 5 advanced multiuser navigation and racing functions into one unified module. This consolidated structure establishes a scalable architecture for group lifecycle management, role control, messaging, shared navigation objects, spread analytics, synchronization logic, and structured race handling. The design keeps state centralized inside a GroupsManager class while organizing shared waypoints, routes, member tracking, and active race objects in dedicated collections. This keeps memory usage predictable and makes the module extensible for future submodules such as synchronized checkpoint validation, leaderboard rendering, adaptive pacing analysis, or distributed event triggers.
 
-The racing functions introduce a competitive overlay that compares distance progress, elapsed time, and speed across different movement modes. double_route_race supports two racers operating in potentially different travel modes, while triple_route_race extends the logic to three participants. Each racer maintains a structured race profile that includes mode classification, route reference, start time, checkpoint index, and completion state. The comparison engine can compute percent completion along a shared route, estimated finish time, and leader delta. The code below expands the GroupsManager class with the requested functions and supporting data structures in Monkey C prototype form.
+Because Connect IQ runs in a sandboxed environment with limited execution time and memory constraints, this prototype keeps networking and heavy computation abstracted as placeholders. Real-world deployment would require careful API-level targeting and device capability filtering in the manifest. The combined module below represents a structured baseline suitable for refinement into a production-ready Connect IQ application for compatible Garmin devices.
 
 ```
 using Toybox.Application;
+using Toybox.Activity;
+using Toybox.Attention;
+using Toybox.Background;
+using Toybox.BluetoothLowEnergy;
 using Toybox.Communications;
-using Toybox.Position;
-using Toybox.Time;
-using Toybox.Math;
+using Toybox.Fit;
+using Toybox.Graphics;
 using Toybox.Lang;
+using Toybox.Math;
+using Toybox.Position;
+using Toybox.Sensor;
+using Toybox.SensorHistory;
+using Toybox.Storage;
+using Toybox.System;
+using Toybox.Time;
 
 module Leadalong {
 
@@ -33,6 +43,7 @@ module Leadalong {
             var sharedWaypoints;
             var sharedRoutes;
             var memberPositions;
+            var groupSettings;
             var activeRaces;
 
             function initialize() {
@@ -40,15 +51,90 @@ module Leadalong {
                 sharedWaypoints = [];
                 sharedRoutes = [];
                 memberPositions = {};
+                groupSettings = {};
                 activeRaces = [];
+            }
+
+            function createGroup(id as String) { groupId = id; }
+
+            function joinGroup(id as String) { groupId = id; }
+
+            function leaveGroup() { groupId = null; }
+
+            function assignLeader(memberId as String) { leaderId = memberId; }
+
+            function getLeader() { return leaderId; }
+
+            function addMember(memberId as String) { members.add(memberId); }
+
+            function removeMember(memberId as String) {
+                var idx = members.indexOf(memberId);
+                if (idx != null) { members.remove(idx); }
+            }
+
+            function listMembers() { return members; }
+
+            function broadcastMessage(message as String) { }
+
+            function sendDirectMessage(memberId as String, message as String) { }
+
+            function publishWaypoint(lat as Float, lon as Float) {
+                sharedWaypoints.add({:lat=>lat,:lon=>lon,:timestamp=>Time.now()});
+            }
+
+            function getSharedWaypoints() { return sharedWaypoints; }
+
+            function clearSharedWaypoints() { sharedWaypoints.clear(); }
+
+            function updateMemberPosition(memberId as String, lat as Float, lon as Float) {
+                memberPositions[memberId] = {:lat=>lat,:lon=>lon,:timestamp=>Time.now()};
+            }
+
+            function getMemberPosition(memberId as String) {
+                return memberPositions[memberId];
+            }
+
+            function calculateGroupSpread() { return 0; }
+
+            function setSpreadAlertThreshold(distance as Float) {
+                groupSettings[:spreadThreshold] = distance;
+            }
+
+            function checkSpreadAlert() { return false; }
+
+            function syncGroupState() { }
+
+            function acknowledgeSync(memberId as String) { }
+
+            function setGroupSetting(key as String, value) {
+                groupSettings[key] = value;
+            }
+
+            function getGroupSetting(key as String) {
+                return groupSettings[key];
+            }
+
+            function dissolveGroup() {
+                members.clear();
+                sharedWaypoints.clear();
+                sharedRoutes.clear();
+                memberPositions.clear();
+                groupId = null;
+                leaderId = null;
+            }
+
+            function getGroupId() { return groupId; }
+
+            function isMember(memberId as String) {
+                return members.indexOf(memberId) != null;
             }
 
             function group_waypoint(name as String, lat as Float, lon as Float) {
                 var waypoint = {
-                    :name => name,
-                    :lat  => lat,
-                    :lon  => lon,
-                    :timestamp => Time.now()
+                    :name=>name,
+                    :lat=>lat,
+                    :lon=>lon,
+                    :timestamp=>Time.now()
                 };
                 sharedWaypoints.add(waypoint);
                 return waypoint;
@@ -56,9 +142,9 @@ module Leadalong {
 
             function group_route(name as String, routePoints as Array) {
                 var route = {
-                    :name => name,
-                    :points => routePoints,
-                    :created => Time.now()
+                    :name=>name,
+                    :points=>routePoints,
+                    :created=>Time.now()
                 };
                 sharedRoutes.add(route);
                 return route;
@@ -66,26 +152,22 @@ module Leadalong {
 
             function group_track(memberId as String, lat as Float, lon as Float) {
                 memberPositions[memberId] = {
-                    :lat => lat,
-                    :lon => lon,
-                    :timestamp => Time.now()
+                    :lat=>lat,
+                    :lon=>lon,
+                    :timestamp=>Time.now()
                 };
-            }
-
-            function get_group_track(memberId as String) {
-                return memberPositions[memberId];
             }
 
             function double_route_race(racerA as String, racerB as String, routeName as String, modeA as String, modeB as String) {
 
                 var race = {
-                    :type => "double",
-                    :route => routeName,
-                    :racers => [
-                        { :id => racerA, :mode => modeA, :start => Time.now(), :progress => 0.0 },
-                        { :id => racerB, :mode => modeB, :start => Time.now(), :progress => 0.0 }
+                    :type=>"double",
+                    :route=>routeName,
+                    :racers=>[
+                        {:id=>racerA,:mode=>modeA,:start=>Time.now(),:progress=>0.0},
+                        {:id=>racerB,:mode=>modeB,:start=>Time.now(),:progress=>0.0}
                     ],
-                    :status => "active"
+                    :status=>"active"
                 };
 
                 activeRaces.add(race);
@@ -95,14 +177,14 @@ module Leadalong {
             function triple_route_race(racerA as String, racerB as String, racerC as String, routeName as String, modeA as String, modeB as String, modeC as String) {
 
                 var race = {
-                    :type => "triple",
-                    :route => routeName,
-                    :racers => [
-                        { :id => racerA, :mode => modeA, :start => Time.now(), :progress => 0.0 },
-                        { :id => racerB, :mode => modeB, :start => Time.now(), :progress => 0.0 },
-                        { :id => racerC, :mode => modeC, :start => Time.now(), :progress => 0.0 }
+                    :type=>"triple",
+                    :route=>routeName,
+                    :racers=>[
+                        {:id=>racerA,:mode=>modeA,:start=>Time.now(),:progress=>0.0},
+                        {:id=>racerB,:mode=>modeB,:start=>Time.now(),:progress=>0.0},
+                        {:id=>racerC,:mode=>modeC,:start=>Time.now(),:progress=>0.0}
                     ],
-                    :status => "active"
+                    :status=>"active"
                 };
 
                 activeRaces.add(race);
