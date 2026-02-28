@@ -1,0 +1,312 @@
+The Leadalong.Groups module can be expanded to support structured shared navigation objects and competitive multi-mode racing logic while staying within Connect IQ constraints. The group_waypoint, group_route, and group_track capabilities extend the shared state model so that navigation artifacts are distributed to members and synchronized periodically. Waypoints represent discrete geographic targets, routes represent ordered waypoint paths, and group tracking maintains a lightweight position table that can be used to compute spread, pacing, and compliance relative to leader-defined objectives. Because Connect IQ networking is constrained, synchronization would typically occur through paired phone relay or periodic peer messaging, with compressed state payloads and timestamp validation to prevent stale updates.
+
+The racing functions introduce a competitive overlay that compares distance progress, elapsed time, and speed across different movement modes. double_route_race supports two racers operating in potentially different travel modes, while triple_route_race extends the logic to three participants. Each racer maintains a structured race profile that includes mode classification, route reference, start time, checkpoint index, and completion state. The comparison engine can compute percent completion along a shared route, estimated finish time, and leader delta. The code below expands the GroupsManager class with the requested functions and supporting data structures in Monkey C prototype form.
+
+------------
+
+using Toybox.Application;
+using Toybox.Activity;
+using Toybox.Attention;
+using Toybox.Background;
+using Toybox.BluetoothLowEnergy;
+using Toybox.Communications;
+using Toybox.Fit;
+using Toybox.Graphics;
+using Toybox.Lang;
+using Toybox.Math;
+using Toybox.Position;
+using Toybox.Sensor;
+using Toybox.SensorHistory;
+using Toybox.Storage;
+using Toybox.System;
+using Toybox.Time;
+
+module Leadalong {
+
+    module Groups {
+
+        class GroupsManager {
+
+            var groupId;
+            var members;
+            var leaderId;
+            var sharedWaypoints;
+            var sharedRoutes;
+            var memberPositions;
+            var groupSettings;
+            var activeRaces;
+
+            function initialize() {
+                members = [];
+                sharedWaypoints = [];
+                sharedRoutes = [];
+                memberPositions = {};
+                groupSettings = {};
+                activeRaces = [];
+            }
+
+            function createGroup(id as String) { groupId = id; }
+
+            function joinGroup(id as String) { groupId = id; }
+
+            function leaveGroup() { groupId = null; }
+
+            function assignLeader(memberId as String) { leaderId = memberId; }
+
+            function getLeader() { return leaderId; }
+
+            function addMember(memberId as String) { members.add(memberId); }
+
+            function removeMember(memberId as String) {
+                var idx = members.indexOf(memberId);
+                if (idx != null) { members.remove(idx); }
+            }
+
+            function listMembers() { return members; }
+
+            function broadcastMessage(message as String) { }
+
+            function sendDirectMessage(memberId as String, message as String) { }
+
+            function publishWaypoint(lat as Float, lon as Float) {
+                sharedWaypoints.add({:lat=>lat,:lon=>lon,:timestamp=>Time.now()});
+            }
+
+            function getSharedWaypoints() { return sharedWaypoints; }
+
+            function clearSharedWaypoints() { sharedWaypoints.clear(); }
+
+            function updateMemberPosition(memberId as String, lat as Float, lon as Float, heading as Float) {
+                memberPositions[memberId] = {
+                    :lat=>lat,
+                    :lon=>lon,
+                    :heading=>heading,
+                    :timestamp=>Time.now()
+                };
+            }
+
+            function getMemberPosition(memberId as String) {
+                return memberPositions[memberId];
+            }
+
+            function calculateGroupSpread() { return 0; }
+
+            function setSpreadAlertThreshold(distance as Float) {
+                groupSettings[:spreadThreshold] = distance;
+            }
+
+            function checkSpreadAlert() { return false; }
+
+            function syncGroupState() { }
+
+            function acknowledgeSync(memberId as String) { }
+
+            function setGroupSetting(key as String, value) {
+                groupSettings[key] = value;
+            }
+
+            function getGroupSetting(key as String) {
+                return groupSettings[key];
+            }
+
+            function dissolveGroup() {
+                members.clear();
+                sharedWaypoints.clear();
+                sharedRoutes.clear();
+                memberPositions.clear();
+                groupId = null;
+                leaderId = null;
+            }
+
+            function getGroupId() { return groupId; }
+
+            function isMember(memberId as String) {
+                return members.indexOf(memberId) != null;
+            }
+
+            function group_waypoint(name as String, lat as Float, lon as Float) {
+                var waypoint = {
+                    :name=>name,
+                    :lat=>lat,
+                    :lon=>lon,
+                    :timestamp=>Time.now()
+                };
+                sharedWaypoints.add(waypoint);
+                return waypoint;
+            }
+
+            function group_route(name as String, routePoints as Array) {
+                var route = {
+                    :name=>name,
+                    :points=>routePoints,
+                    :created=>Time.now()
+                };
+                sharedRoutes.add(route);
+                return route;
+            }
+
+            function group_track(memberId as String, lat as Float, lon as Float) {
+                memberPositions[memberId] = {
+                    :lat=>lat,
+                    :lon=>lon,
+                    :timestamp=>Time.now()
+                };
+            }
+
+            function double_route_race(racerA as String, racerB as String, routeName as String, modeA as String, modeB as String) {
+
+                var race = {
+                    :type=>"double",
+                    :route=>routeName,
+                    :racers=>[
+                        {:id=>racerA,:mode=>modeA,:start=>Time.now(),:progress=>0.0},
+                        {:id=>racerB,:mode=>modeB,:start=>Time.now(),:progress=>0.0}
+                    ],
+                    :status=>"active"
+                };
+
+                activeRaces.add(race);
+                return race;
+            }
+
+            function triple_route_race(racerA as String, racerB as String, racerC as String, routeName as String, modeA as String, modeB as String, modeC as String) {
+
+                var race = {
+                    :type=>"triple",
+                    :route=>routeName,
+                    :racers=>[
+                        {:id=>racerA,:mode=>modeA,:start=>Time.now(),:progress=>0.0},
+                        {:id=>racerB,:mode=>modeB,:start=>Time.now(),:progress=>0.0},
+                        {:id=>racerC,:mode=>modeC,:start=>Time.now(),:progress=>0.0}
+                    ],
+                    :status=>"active"
+                };
+
+                activeRaces.add(race);
+                return race;
+            }
+
+            function update_race_progress(racerId as String, progress as Float) {
+                for (var i = 0; i < activeRaces.size(); i++) {
+                    var race = activeRaces[i];
+                    for (var j = 0; j < race[:racers].size(); j++) {
+                        if (race[:racers][j][:id] == racerId) {
+                            race[:racers][j][:progress] = progress;
+                        }
+                    }
+                }
+            }
+
+            function get_race_status(index as Number) {
+                if (index < activeRaces.size()) {
+                    return activeRaces[index];
+                }
+                return null;
+            }
+
+            function end_race(index as Number) {
+                if (index < activeRaces.size()) {
+                    activeRaces[index][:status] = "completed";
+                }
+            }
+
+            function group_nearest(memberId as String) {
+
+                var base = memberPositions[memberId];
+                if (base == null) { return null; }
+
+                var nearestId = null;
+                var nearestDistance = 9999999.0;
+
+                foreach (var id in memberPositions.keys()) {
+                    if (id != memberId) {
+                        var pos = memberPositions[id];
+                        var d = Math.sqrt(
+                            Math.pow(pos[:lat] - base[:lat], 2) +
+                            Math.pow(pos[:lon] - base[:lon], 2)
+                        );
+                        if (d < nearestDistance) {
+                            nearestDistance = d;
+                            nearestId = id;
+                        }
+                    }
+                }
+
+                return { :member => nearestId, :distance => nearestDistance };
+            }
+
+            function group_devices() {
+
+                var devices = [];
+                devices.add({ :deviceName => "PrimaryDevice", :deviceId => System.getDeviceSettings().partNumber });
+                return devices;
+            }
+
+            function group_activity(name as String, waypointList as Array) {
+
+                var activity = {
+                    :name => name,
+                    :tasks => waypointList,
+                    :created => Time.now(),
+                    :status => "active"
+                };
+
+                groupSettings[:currentActivity] = activity;
+                return activity;
+            }
+
+            function group_direct() {
+
+                var totalHeading = 0.0;
+                var count = 0;
+
+                foreach (var id in memberPositions.keys()) {
+                    var pos = memberPositions[id];
+                    if (pos != null && pos[:heading] != null) {
+                        totalHeading += pos[:heading];
+                        count += 1;
+                    }
+                }
+
+                if (count == 0) { return null; }
+
+                return totalHeading / count;
+            }
+
+            function group_locate(memberId as String) {
+                return memberPositions[memberId];
+            }
+
+            function group_sync() {
+
+                var syncPacket = {
+                    :leader => leaderId,
+                    :route => sharedRoutes,
+                    :waypoints => sharedWaypoints,
+                    :timestamp => Time.now()
+                };
+
+                return syncPacket;
+            }
+
+            function group_follow(memberId as String) {
+
+                if (leaderId == null) { return false; }
+
+                groupSettings[:followMode] = {
+                    :member => memberId,
+                    :leader => leaderId,
+                    :enabled => true
+                };
+
+                return true;
+            }
+
+            function group_lead(memberId as String) {
+
+                leaderId = memberId;
+                return leaderId;
+            }
+        }
+    }
+}
