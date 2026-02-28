@@ -224,6 +224,8 @@ module Leadalong {
 
 ------------------
 
+<img width="1200" height="400" alt="Bikes" src="https://github.com/user-attachments/assets/109c6dd9-ba7e-41c7-bea3-cddeb2657241" />
+
 Monkey C compatibility across Garmin devices depends entirely on whether the device supports the Connect IQ platform and on the specific API level and capability profile that device exposes. Not all Garmin devices are equal in terms of memory, screen resolution, available sensors, background processing permissions, networking support, or storage limits. Even among Connect IQ–enabled devices, there are differences in available modules such as Communications, BluetoothLowEnergy, or advanced mapping interfaces. A module like Leadalong.Groups, which relies on multiuser coordination, route management, and potential phone-relayed synchronization, requires a device that supports modern Connect IQ API levels, has sufficient memory for state tracking, and ideally includes mapping and positioning capabilities suitable for outdoor navigation. Larger-screen, higher-tier handhelds and performance watches typically offer better support for complex UI rendering and persistent storage. Therefore, when targeting compatibility, the module must be configured in its manifest to include only devices that support the necessary APIs and have adequate memory and display capabilities for group tracking and race visualization.
 
 ```
