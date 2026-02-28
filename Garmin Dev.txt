@@ -1,0 +1,25 @@
+How to Develop for Garmin GPS Devices
+
+1. Create a Garmin developer account and install the Connect IQ SDK for Windows. Sign in to Garmin’s Connect IQ developer site, download the Windows SDK installer, and install it to a simple folder path such as C:\Garmin\ConnectIQ so command-line paths are easier to manage.
+
+2. Install a supported Java JDK and confirm it runs in your terminal. Install the JDK version recommended for your Connect IQ SDK release, then open Command Prompt or PowerShell and run java -version. If Windows cannot find Java, add the JDK bin directory to your PATH and open a new terminal window before testing again.
+
+3. Generate your Garmin developer key and store it safely. In the Garmin developer portal, create a developer key file (commonly a .der). Save it in a stable location like C:\Garmin\keys\developer_key.der and do not share it publicly, because it is used to sign your apps for device acceptance.
+
+4. Add the Connect IQ SDK tools to PATH and verify monkeyc works. Add the SDK bin directory to PATH, for example C:\Garmin\ConnectIQ\bin, then open a new terminal and run monkeyc -version. If you see a version output, the compiler is accessible from the command line.
+
+5. Create a clean project folder structure for a Montana-targeted app. Make a folder such as C:\Garmin\Projects\MontanaHello and create subfolders named source and resources, plus a build folder for output. Place a manifest.xml file in the project root and at least one .mc file in the source folder.
+
+6. Create a valid manifest.xml that targets the correct device family and permissions. Use a Garmin sample manifest as a starting point, set your application metadata, and include the correct target device identifier(s) for the Montana 700 series that match the device definitions shipped with your installed SDK. If the target identifiers do not match your SDK, compilation will fail even if your code is correct.
+
+7. Write a minimal Monkey C app source file and keep it compatible with your target. Add a basic App class and a simple View so the app can launch. Avoid using APIs that are not available on the Montana target, because Connect IQ capability differs by device family and SDK version.
+
+8. Compile and sign the app from Command Prompt in the project root. In the terminal, change to your project directory and run a monkeyc command that points to your manifest, output path, developer key, target device id, and source files. A typical pattern is monkeyc -f manifest.xml -o build\YourApp.prg -y C:\Garmin\keys\developer_key.der -d montana700 source\*.mc, but you must replace the device id with the exact identifier recognized by your installed SDK.
+
+9. Launch and use the Connect IQ simulator to test without hardware. Start the simulator launcher from the terminal, select a Montana-compatible simulated device profile if available, and load the compiled .prg file from your build folder. Use the simulator controls to test UI flow and any supported sensor or location simulation options.
+
+10. Automate rebuilds with a simple PowerShell script for fast iteration. Create a build.ps1 in your project root that runs the same monkeyc command each time, then rebuild by running powershell -ExecutionPolicy Bypass -File .\build.ps1. This gives you a repeatable workflow without any IDE.
+
+11. Deploy to a physical Montana only after simulator testing passes. Connect the device over USB and use the SDK-supported deployment method for Connect IQ device testing on your model, ensuring the build is signed with your developer key and targets the correct device identifier. If the device rejects the app, the most common causes are an incorrect signing key, an incorrect target id, or use of APIs not supported by that device.
+
+12. Troubleshoot build failures by matching targets, API levels, and resources exactly. If you see signing errors, confirm the developer key path and that the key file is valid. If you see target or API level errors, verify the manifest targets match your installed SDK device definitions. If you see resource errors, verify filenames, folder paths, and manifest resource references match exactly, including capitalization.
