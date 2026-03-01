@@ -16,9 +16,18 @@ This module is intended to function as a foundation layer that future Leadalong 
 
 </details>
 
+<details>
+<summary>Search</summary>
+
+The Leadalong.Search submodule functions as a structured search planning and execution engine designed for Garmin Connect IQ devices. It provides a systematic framework for defining search geometries, organizing search sessions into segments, and measuring operational performance over time. Search areas are represented as named geometric constructs composed of coordinate arrays, enabling repeatable patterns such as lines, squares, spirals, and fully custom-defined routes. Each area maintains metadata including creation time, origin parameters, and structural properties, allowing consistent reuse and comparison across sessions. The module maintains internal state collections for active searches, completed segments, visited points, coverage counts, and timing metrics, forming a cohesive data model that supports both guided navigation and performance analytics within the device’s runtime constraints.
+
+Beyond geometry creation, the submodule incorporates measurement and reporting mechanisms that track duration, per-segment timing, coverage percentage, estimated distance, and speed-based time projections. Visitation logic uses configurable spatial snapping to normalize coordinate data and prevent redundant counts, while search segments allow fine-grained timing within a broader search session. Export functionality supports CSV generation and local storage persistence, enabling structured data retrieval and post-processing outside the device. Alert handling and synchronization packet preparation provide integration points for user notification and group-level coordination without exceeding Connect IQ sandbox limitations. The architecture emphasizes predictable memory usage, modular growth, and clean separation of search geometry, execution tracking, and analytics logic, making it a scalable foundation for future search-related extensions within the Leadalong system.
+
+</details>
+
 ------------------
 
-<img width="1200" height="400" alt="Bikes" src="https://github.com/user-attachments/assets/109c6dd9-ba7e-41c7-bea3-cddeb2657241" />
+![Routes](https://github.com/user-attachments/assets/8e83d27d-d71e-4922-acce-ecd70c76de6a)
 
 Monkey C compatibility across Garmin devices depends entirely on whether the device supports the Connect IQ platform and on the specific API level and capability profile that device exposes. Not all Garmin devices are equal in terms of memory, screen resolution, available sensors, background processing permissions, networking support, or storage limits. Even among Connect IQ–enabled devices, there are differences in available modules such as Communications, BluetoothLowEnergy, or advanced mapping interfaces. A module like Leadalong.Groups, which relies on multiuser coordination, route management, and potential phone-relayed synchronization, requires a device that supports modern Connect IQ API levels, has sufficient memory for state tracking, and ideally includes mapping and positioning capabilities suitable for outdoor navigation. Larger-screen, higher-tier handhelds and performance watches typically offer better support for complex UI rendering and persistent storage. Therefore, when targeting compatibility, the module must be configured in its manifest to include only devices that support the necessary APIs and have adequate memory and display capabilities for group tracking and race visualization.
 
