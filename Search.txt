@@ -1,0 +1,649 @@
+The Leadalong.Search submodule functions as a structured search planning and execution engine designed for Garmin Connect IQ devices. It provides a systematic framework for defining search geometries, organizing search sessions into segments, and measuring operational performance over time. Search areas are represented as named geometric constructs composed of coordinate arrays, enabling repeatable patterns such as lines, squares, spirals, and fully custom-defined routes. Each area maintains metadata including creation time, origin parameters, and structural properties, allowing consistent reuse and comparison across sessions. The module maintains internal state collections for active searches, completed segments, visited points, coverage counts, and timing metrics, forming a cohesive data model that supports both guided navigation and performance analytics within the device’s runtime constraints.
+
+Beyond geometry creation, the submodule incorporates measurement and reporting mechanisms that track duration, per-segment timing, coverage percentage, estimated distance, and speed-based time projections. Visitation logic uses configurable spatial snapping to normalize coordinate data and prevent redundant counts, while search segments allow fine-grained timing within a broader search session. Export functionality supports CSV generation and local storage persistence, enabling structured data retrieval and post-processing outside the device. Alert handling and synchronization packet preparation provide integration points for user notification and group-level coordination without exceeding Connect IQ sandbox limitations. The architecture emphasizes predictable memory usage, modular growth, and clean separation of search geometry, execution tracking, and analytics logic, making it a scalable foundation for future search-related extensions within the Leadalong system.
+
+------------------
+
+using Toybox.Application;
+using Toybox.Attention;
+using Toybox.Communications;
+using Toybox.Lang;
+using Toybox.Math;
+using Toybox.Position;
+using Toybox.Storage;
+using Toybox.System;
+using Toybox.Time;
+
+module Leadalong {
+
+    module Search {
+
+        class SearchManager {
+
+            var searchSettings;
+            var searchAreas;
+            var searchSegments;
+            var searchLogs;
+            var activeSearch;
+            var activeSegment;
+            var startTimestamp;
+
+            var visitedPoints;
+            var visitedCountsByArea;
+            var visitedCountsBySegment;
+
+            var lastAlert;
+            var lastSyncPacket;
+
+            function initialize() {
+                searchSettings = {};
+                searchAreas = [];
+                searchSegments = [];
+                searchLogs = [];
+                activeSearch = null;
+                activeSegment = null;
+                startTimestamp = null;
+
+                visitedPoints = {};
+                visitedCountsByArea = {};
+                visitedCountsBySegment = {};
+
+                lastAlert = null;
+                lastSyncPacket = null;
+
+                searchSettings[:targetSpeed] = 1.2;
+                searchSettings[:pointSnap] = 0.00005;
+                searchSettings[:storagePrefix] = "leadalong.search.";
+            }
+
+            function set_setting(key as String, value) {
+                searchSettings[key] = value;
+                return value;
+            }
+
+            function get_setting(key as String) {
+                return searchSettings[key];
+            }
+
+            function list_areas() {
+                return searchAreas;
+            }
+
+            function get_area(areaIndex as Number) {
+                if (areaIndex == null) { return null; }
+                if (areaIndex < 0) { return null; }
+                if (areaIndex >= searchAreas.size()) { return null; }
+                return searchAreas[areaIndex];
+            }
+
+            function list_segments() {
+                return searchSegments;
+            }
+
+            function list_logs() {
+                return searchLogs;
+            }
+
+            function reset_all() {
+                searchAreas.clear();
+                searchSegments.clear();
+                searchLogs.clear();
+                visitedPoints.clear();
+                visitedCountsByArea.clear();
+                visitedCountsBySegment.clear();
+                activeSearch = null;
+                activeSegment = null;
+                startTimestamp = null;
+                lastAlert = null;
+                lastSyncPacket = null;
+            }
+
+            function search_pattern(name as String, points as Array, meta) {
+                var area = {
+                    :name => name,
+                    :type => "custom",
+                    :points => normalize_points(points),
+                    :meta => meta,
+                    :created => Time.now(),
+                    :areaIndex => searchAreas.size()
+                };
+                searchAreas.add(area);
+                return area;
+            }
+
+            function line_search(name as String, points as Array) {
+                var area = {
+                    :name => name,
+                    :type => "line",
+                    :points => normalize_points(points),
+                    :created => Time.now(),
+                    :areaIndex => searchAreas.size()
+                };
+                searchAreas.add(area);
+                return area;
+            }
+
+            function square_search(originLat as Float, originLon as Float, step as Float, rings as Number) {
+                var points = [];
+                var r = 1;
+
+                while (r <= rings) {
+                    var d = step * r;
+
+                    points.add({:lat => originLat - d, :lon => originLon - d});
+                    points.add({:lat => originLat - d, :lon => originLon + d});
+                    points.add({:lat => originLat + d, :lon => originLon + d});
+                    points.add({:lat => originLat + d, :lon => originLon - d});
+                    points.add({:lat => originLat - d, :lon => originLon - d});
+
+                    r += 1;
+                }
+
+                var area = {
+                    :name => "SquareSearch",
+                    :type => "square",
+                    :points => normalize_points(points),
+                    :created => Time.now(),
+                    :areaIndex => searchAreas.size(),
+                    :origin => {:lat => originLat, :lon => originLon},
+                    :step => step,
+                    :rings => rings
+                };
+                searchAreas.add(area);
+                return area;
+            }
+
+            function spiral_search(originLat as Float, originLon as Float, step as Float, turns as Number, obstacles as Array) {
+                var points = [];
+                var angle = 0.0;
+                var radius = 0.0;
+
+                var i = 0;
+                while (i < turns) {
+                    angle += 0.5;
+                    radius += step;
+
+                    var lat = originLat + (Math.cos(angle) * radius);
+                    var lon = originLon + (Math.sin(angle) * radius);
+
+                    if (!is_obstacle(lat, lon, obstacles)) {
+                        points.add({:lat => lat, :lon => lon});
+                    } else {
+                        var altLat = originLat + (Math.cos(angle + 0.35) * radius);
+                        var altLon = originLon + (Math.sin(angle + 0.35) * radius);
+                        if (!is_obstacle(altLat, altLon, obstacles)) {
+                            points.add({:lat => altLat, :lon => altLon});
+                        }
+                    }
+
+                    i += 1;
+                }
+
+                var area = {
+                    :name => "SpiralSearch",
+                    :type => "spiral",
+                    :points => normalize_points(points),
+                    :created => Time.now(),
+                    :areaIndex => searchAreas.size(),
+                    :origin => {:lat => originLat, :lon => originLon},
+                    :step => step,
+                    :turns => turns
+                };
+                searchAreas.add(area);
+                return area;
+            }
+
+            function search_templates() {
+                var templates = [];
+
+                templates.add({
+                    :name => "SimpleLine",
+                    :type => "line",
+                    :example => [
+                        {:lat => 0.0, :lon => 0.0},
+                        {:lat => 0.0, :lon => 0.01},
+                        {:lat => 0.0, :lon => 0.02}
+                    ]
+                });
+
+                templates.add({
+                    :name => "SquareRings",
+                    :type => "square",
+                    :example => {
+                        :originLat => 0.0,
+                        :originLon => 0.0,
+                        :step => 0.01,
+                        :rings => 3
+                    }
+                });
+
+                templates.add({
+                    :name => "SpiralOut",
+                    :type => "spiral",
+                    :example => {
+                        :originLat => 0.0,
+                        :originLon => 0.0,
+                        :step => 0.001,
+                        :turns => 60
+                    }
+                });
+
+                templates.add({
+                    :name => "CustomPattern",
+                    :type => "custom",
+                    :example => {
+                        :points => [
+                            {:lat => 0.0, :lon => 0.0},
+                            {:lat => 0.01, :lon => 0.0},
+                            {:lat => 0.01, :lon => 0.01}
+                        ],
+                        :meta => {:note => "Example only"}
+                    }
+                });
+
+                return templates;
+            }
+
+            function search_speed(targetSpeed as Float) {
+                searchSettings[:targetSpeed] = targetSpeed;
+                return targetSpeed;
+            }
+
+            function get_search_speed() {
+                return searchSettings[:targetSpeed];
+            }
+
+            function search_time() {
+                if (startTimestamp == null) { return 0; }
+                var now = Time.now();
+                return now.value() - startTimestamp.value();
+            }
+
+            function start_search(areaIndex as Number, name as String) {
+                if (areaIndex == null) { return false; }
+                if (areaIndex < 0) { return false; }
+                if (areaIndex >= searchAreas.size()) { return false; }
+
+                activeSearch = {
+                    :name => name,
+                    :areaIndex => areaIndex,
+                    :started => Time.now(),
+                    :status => "active"
+                };
+
+                startTimestamp = activeSearch[:started];
+
+                var areaKey = area_key(areaIndex);
+                if (visitedCountsByArea[areaKey] == null) {
+                    visitedCountsByArea[areaKey] = 0;
+                }
+
+                return true;
+            }
+
+            function end_search(note as String) {
+                if (activeSearch == null) { return null; }
+
+                if (activeSegment != null) {
+                    end_segment("auto_end");
+                }
+
+                var ended = Time.now();
+                var duration = ended.value() - activeSearch[:started].value();
+
+                var record = {
+                    :name => activeSearch[:name],
+                    :areaIndex => activeSearch[:areaIndex],
+                    :started => activeSearch[:started],
+                    :ended => ended,
+                    :duration => duration,
+                    :note => note,
+                    :coverage => search_cover(activeSearch[:areaIndex])
+                };
+
+                searchSegments.add(record);
+
+                activeSearch = null;
+                activeSegment = null;
+                startTimestamp = null;
+
+                return record;
+            }
+
+            function start_segment(segmentName as String) {
+                if (activeSearch == null) { return false; }
+                if (segmentName == null) { return false; }
+
+                if (activeSegment != null) {
+                    end_segment("auto_switch");
+                }
+
+                activeSegment = {
+                    :segmentName => segmentName,
+                    :areaIndex => activeSearch[:areaIndex],
+                    :started => Time.now(),
+                    :ended => null,
+                    :duration => null,
+                    :status => "active"
+                };
+
+                var segKey = segment_key(activeSearch[:areaIndex], segmentName);
+                if (visitedCountsBySegment[segKey] == null) {
+                    visitedCountsBySegment[segKey] = 0;
+                }
+
+                return true;
+            }
+
+            function end_segment(note as String) {
+                if (activeSegment == null) { return null; }
+
+                var ended = Time.now();
+                var duration = ended.value() - activeSegment[:started].value();
+
+                var record = {
+                    :type => "segment",
+                    :segmentName => activeSegment[:segmentName],
+                    :areaIndex => activeSegment[:areaIndex],
+                    :started => activeSegment[:started],
+                    :ended => ended,
+                    :duration => duration,
+                    :note => note,
+                    :coverage => search_cover(activeSegment[:areaIndex])
+                };
+
+                searchSegments.add(record);
+                activeSegment = null;
+                return record;
+            }
+
+            function longest_search() {
+                var longest = null;
+
+                var i = 0;
+                while (i < searchSegments.size()) {
+                    var seg = searchSegments[i];
+                    if (seg != null && seg[:duration] != null) {
+                        if (longest == null || seg[:duration] > longest[:duration]) {
+                            longest = seg;
+                        }
+                    }
+                    i += 1;
+                }
+
+                return longest;
+            }
+
+            function shortest_search() {
+                var shortest = null;
+
+                var i = 0;
+                while (i < searchSegments.size()) {
+                    var seg = searchSegments[i];
+                    if (seg != null && seg[:duration] != null) {
+                        if (shortest == null || seg[:duration] < shortest[:duration]) {
+                            shortest = seg;
+                        }
+                    }
+                    i += 1;
+                }
+
+                return shortest;
+            }
+
+            function search_log(areaName as String, segmentName as String, note as String) {
+                var entry = {
+                    :area => areaName,
+                    :segment => segmentName,
+                    :note => note,
+                    :timestamp => Time.now()
+                };
+                searchLogs.add(entry);
+                return entry;
+            }
+
+            function search_cover(areaIndex as Number) {
+                if (areaIndex == null) { return 0.0; }
+                if (areaIndex < 0) { return 0.0; }
+                if (areaIndex >= searchAreas.size()) { return 0.0; }
+
+                var area = searchAreas[areaIndex];
+                var total = area[:points].size().toFloat();
+                if (total <= 0.0) { return 0.0; }
+
+                var count = 0.0;
+
+                var i = 0;
+                while (i < area[:points].size()) {
+                    var pt = area[:points][i];
+                    var key = visited_key(areaIndex, null, pt[:lat], pt[:lon]);
+                    if (visitedPoints[key] != null) {
+                        count += 1.0;
+                    }
+                    i += 1;
+                }
+
+                return (count / total) * 100.0;
+            }
+
+            function mark_point_visited(lat as Float, lon as Float) {
+                if (activeSearch == null) { return false; }
+
+                var areaIndex = activeSearch[:areaIndex];
+                var segName = null;
+                if (activeSegment != null) { segName = activeSegment[:segmentName]; }
+
+                var snapped = snap_point(lat, lon);
+                var key = visited_key(areaIndex, segName, snapped[:lat], snapped[:lon]);
+
+                if (visitedPoints[key] == null) {
+                    visitedPoints[key] = Time.now();
+
+                    var aKey = area_key(areaIndex);
+                    if (visitedCountsByArea[aKey] == null) { visitedCountsByArea[aKey] = 0; }
+                    visitedCountsByArea[aKey] = visitedCountsByArea[aKey] + 1;
+
+                    if (segName != null) {
+                        var sKey = segment_key(areaIndex, segName);
+                        if (visitedCountsBySegment[sKey] == null) { visitedCountsBySegment[sKey] = 0; }
+                        visitedCountsBySegment[sKey] = visitedCountsBySegment[sKey] + 1;
+                    }
+
+                    return true;
+                }
+
+                return false;
+            }
+
+            function get_visited_count_for_area(areaIndex as Number) {
+                var aKey = area_key(areaIndex);
+                if (visitedCountsByArea[aKey] == null) { return 0; }
+                return visitedCountsByArea[aKey];
+            }
+
+            function get_visited_count_for_segment(areaIndex as Number, segmentName as String) {
+                var sKey = segment_key(areaIndex, segmentName);
+                if (visitedCountsBySegment[sKey] == null) { return 0; }
+                return visitedCountsBySegment[sKey];
+            }
+
+            function search_layer(name as String, areaIndices as Array) {
+                var layerAreas = [];
+
+                var i = 0;
+                while (i < areaIndices.size()) {
+                    var idx = areaIndices[i];
+                    if (idx != null && idx >= 0 && idx < searchAreas.size()) {
+                        layerAreas.add(searchAreas[idx]);
+                    }
+                    i += 1;
+                }
+
+                var layer = {
+                    :name => name,
+                    :type => "overlay",
+                    :areas => layerAreas,
+                    :created => Time.now()
+                };
+
+                return layer;
+            }
+
+            function search_csv(areaIndices as Array) {
+                var csv = "area_name,type,point_index,lat,lon\n";
+
+                var a = 0;
+                while (a < areaIndices.size()) {
+                    var idx = areaIndices[a];
+                    if (idx != null && idx >= 0 && idx < searchAreas.size()) {
+                        var area = searchAreas[idx];
+                        var p = 0;
+                        while (p < area[:points].size()) {
+                            var pt = area[:points][p];
+                            csv += safe_str(area[:name]) + "," + safe_str(area[:type]) + "," + p.format() + "," + pt[:lat].format() + "," + pt[:lon].format() + "\n";
+                            p += 1;
+                        }
+                    }
+                    a += 1;
+                }
+
+                return csv;
+            }
+
+            function save_csv_to_storage(filename as String, areaIndices as Array) {
+                var csv = search_csv(areaIndices);
+                var key = searchSettings[:storagePrefix] + "csv." + filename;
+                Storage.setValue(key, csv);
+                return key;
+            }
+
+            function load_csv_from_storage(filename as String) {
+                var key = searchSettings[:storagePrefix] + "csv." + filename;
+                return Storage.getValue(key);
+            }
+
+            function search_alert(message as String) {
+                lastAlert = {
+                    :message => message,
+                    :timestamp => Time.now()
+                };
+                Attention.vibrate(Attention.VIBE_SHORT);
+                return lastAlert;
+            }
+
+            function get_last_alert() {
+                return lastAlert;
+            }
+
+            function search_group(groupId as String, area) {
+                var packet = {
+                    :type => "group_search",
+                    :groupId => groupId,
+                    :area => area,
+                    :timestamp => Time.now()
+                };
+                lastSyncPacket = packet;
+                return packet;
+            }
+
+            function group_sync_send(packet) {
+                lastSyncPacket = packet;
+                return true;
+            }
+
+            function get_last_sync_packet() {
+                return lastSyncPacket;
+            }
+
+            function estimate_search_distance(areaIndex as Number) {
+                var area = get_area(areaIndex);
+                if (area == null) { return 0.0; }
+                if (area[:points] == null) { return 0.0; }
+                if (area[:points].size() < 2) { return 0.0; }
+
+                var d = 0.0;
+                var i = 1;
+                while (i < area[:points].size()) {
+                    var a = area[:points][i - 1];
+                    var b = area[:points][i];
+                    d += approx_distance(a[:lat], a[:lon], b[:lat], b[:lon]);
+                    i += 1;
+                }
+                return d;
+            }
+
+            function estimate_search_time(areaIndex as Number) {
+                var speed = searchSettings[:targetSpeed];
+                if (speed == null || speed <= 0.0) { speed = 1.0; }
+                var dist = estimate_search_distance(areaIndex);
+                return dist / speed;
+            }
+
+            function is_obstacle(lat as Float, lon as Float, obstacles as Array) {
+                if (obstacles == null) { return false; }
+
+                var i = 0;
+                while (i < obstacles.size()) {
+                    var o = obstacles[i];
+                    if (o != null && o[:lat] != null && o[:lon] != null && o[:radius] != null) {
+                        var d = Math.sqrt(Math.pow(lat - o[:lat], 2) + Math.pow(lon - o[:lon], 2));
+                        if (d <= o[:radius]) { return true; }
+                    }
+                    i += 1;
+                }
+
+                return false;
+            }
+
+            function normalize_points(points as Array) {
+                if (points == null) { return []; }
+
+                var out = [];
+                var i = 0;
+                while (i < points.size()) {
+                    var p = points[i];
+                    if (p != null && p[:lat] != null && p[:lon] != null) {
+                        out.add({:lat => p[:lat], :lon => p[:lon]});
+                    }
+                    i += 1;
+                }
+                return out;
+            }
+
+            function snap_point(lat as Float, lon as Float) {
+                var snap = searchSettings[:pointSnap];
+                if (snap == null) { snap = 0.00005; }
+
+                var slat = Math.round(lat / snap) * snap;
+                var slon = Math.round(lon / snap) * snap;
+
+                return {:lat => slat, :lon => slon};
+            }
+
+            function area_key(areaIndex as Number) {
+                return "area:" + areaIndex.format();
+            }
+
+            function segment_key(areaIndex as Number, segmentName as String) {
+                return "seg:" + areaIndex.format() + ":" + safe_str(segmentName);
+            }
+
+            function visited_key(areaIndex as Number, segmentName, lat as Float, lon as Float) {
+                var s = "none";
+                if (segmentName != null) { s = safe_str(segmentName); }
+                return "v:" + areaIndex.format() + ":" + s + ":" + lat.format() + ":" + lon.format();
+            }
+
+            function safe_str(v) {
+                if (v == null) { return ""; }
+                return v.toString();
+            }
+
+            function approx_distance(lat1 as Float, lon1 as Float, lat2 as Float, lon2 as Float) {
+                var dlat = lat2 - lat1;
+                var dlon = lon2 - lon1;
+                return Math.sqrt((dlat * dlat) + (dlon * dlon));
+            }
+        }
+    }
+}
