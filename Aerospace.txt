@@ -1,0 +1,302 @@
+The Leadalong.Aerospace submodule is a navigation-and-tracking layer that treats air and space movement as structured paths made from waypoints, timing, and simplified kinematics. It is designed to generate flight routes between airports, produce outbound route sets from a single origin, and represent rocket-style ascent trajectories as staged route objects that can be displayed, logged, or shared. The module keeps a consistent data model for routes, including route name, vehicle type, waypoint list, estimated distance, and optional parameters such as speed, cruise altitude, and ascent profile. This creates a reusable foundation for later expansion into weather-aware routing, restricted airspace avoidance, or mission planning overlays without redesigning the core storage format.
+
+For observation features, Aerospace also includes “track” style functions that return Earth-projected positions suitable for map display. Because Connect IQ apps are sandboxed and do not ship with full orbital mechanics libraries, the Moon and ISS trackers are designed as lightweight functions that either provide simplified estimates or accept external inputs. The Moon tracker can return a rough sublunar point derived from time-based approximation, which is adequate for basic observation planning and directional awareness. The ISS tracker is implemented as an interface point that can accept TLE data and return a placeholder until a full propagator is added later, keeping the module structure stable while allowing accuracy upgrades in future versions.
+
+----------------
+
+using Toybox.Application;
+using Toybox.Attention;
+using Toybox.Communications;
+using Toybox.Lang;
+using Toybox.Math;
+using Toybox.Position;
+using Toybox.Storage;
+using Toybox.System;
+using Toybox.Time;
+
+module Leadalong {
+
+    module Aerospace {
+
+        class AerospaceManager {
+
+            var aeroSettings;
+            var airports;
+            var routes;
+            var launchPlans;
+            var tracking;
+            var tleData;
+
+            function initialize() {
+
+                aeroSettings = {};
+                airports = {};
+                routes = [];
+                launchPlans = [];
+                tracking = {};
+                tleData = {};
+
+                aeroSettings[:defaultCruiseSpeed] = 230.0;
+                aeroSettings[:defaultRocketAscentSpeed] = 1500.0;
+                aeroSettings[:earthRadiusKm] = 6371.0;
+            }
+
+            function add_airport(code as String, lat as Float, lon as Float) {
+                airports[code] = {:lat=>lat, :lon=>lon};
+                return airports[code];
+            }
+
+            function get_airport(code as String) {
+                return airports[code];
+            }
+
+            function list_airports() {
+                return airports;
+            }
+
+            function flight_path(name as String, vehicle as String, waypoints as Array, cruiseSpeed as Float) {
+
+                if (cruiseSpeed == null) {
+                    cruiseSpeed = aeroSettings[:defaultCruiseSpeed];
+                }
+
+                var distance = route_distance(waypoints);
+                var estTime = 0.0;
+
+                if (cruiseSpeed > 0) {
+                    estTime = distance / cruiseSpeed;
+                }
+
+                var route = {
+                    :name=>name,
+                    :type=>"flight",
+                    :vehicle=>vehicle,
+                    :points=>waypoints,
+                    :distance=>distance,
+                    :estimatedTime=>estTime,
+                    :created=>Time.now()
+                };
+
+                routes.add(route);
+                return route;
+            }
+
+            function rocket(name as String, waypoints as Array, ascentSpeed as Float) {
+
+                if (ascentSpeed == null) {
+                    ascentSpeed = aeroSettings[:defaultRocketAscentSpeed];
+                }
+
+                var distance = route_distance(waypoints);
+                var estTime = 0.0;
+
+                if (ascentSpeed > 0) {
+                    estTime = distance / ascentSpeed;
+                }
+
+                var route = {
+                    :name=>name,
+                    :type=>"rocket",
+                    :vehicle=>"aerospace_vehicle",
+                    :points=>waypoints,
+                    :distance=>distance,
+                    :estimatedTime=>estTime,
+                    :created=>Time.now()
+                };
+
+                routes.add(route);
+                return route;
+            }
+
+            function longest_flight(codeA as String, codeB as String) {
+
+                var a = airports[codeA];
+                var b = airports[codeB];
+                if (a == null || b == null) { return null; }
+
+                var waypoints = [];
+                waypoints.add({:lat=>a[:lat], :lon=>a[:lon]});
+                waypoints.add({:lat=>b[:lat], :lon=>b[:lon]});
+
+                var distance = haversine_distance(a[:lat], a[:lon], b[:lat], b[:lon]);
+
+                var route = {
+                    :name=>"LongestFlight_" + codeA + "_" + codeB,
+                    :type=>"longest",
+                    :points=>waypoints,
+                    :distance=>distance,
+                    :created=>Time.now()
+                };
+
+                routes.add(route);
+                return route;
+            }
+
+            function flight_routes(originCode as String, destinationCodes as Array) {
+
+                var origin = airports[originCode];
+                if (origin == null) { return null; }
+
+                var outbound = [];
+                var i = 0;
+
+                while (i < destinationCodes.size()) {
+
+                    var dest = airports[destinationCodes[i]];
+                    if (dest != null) {
+
+                        var pts = [];
+                        pts.add({:lat=>origin[:lat], :lon=>origin[:lon]});
+                        pts.add({:lat=>dest[:lat], :lon=>dest[:lon]});
+
+                        outbound.add({
+                            :origin=>originCode,
+                            :destination=>destinationCodes[i],
+                            :distance=>haversine_distance(origin[:lat], origin[:lon], dest[:lat], dest[:lon]),
+                            :points=>pts
+                        });
+                    }
+
+                    i += 1;
+                }
+
+                return outbound;
+            }
+
+            function launch_site(name as String, lat as Float, lon as Float, targetAltitude as Float, ascentSpeed as Float) {
+
+                if (ascentSpeed == null) {
+                    ascentSpeed = aeroSettings[:defaultRocketAscentSpeed];
+                }
+
+                var ascentTime = 0.0;
+                if (ascentSpeed > 0) {
+                    ascentTime = targetAltitude / ascentSpeed;
+                }
+
+                var plan = {
+                    :name=>name,
+                    :lat=>lat,
+                    :lon=>lon,
+                    :targetAltitude=>targetAltitude,
+                    :ascentSpeed=>ascentSpeed,
+                    :estimatedTime=>ascentTime,
+                    :created=>Time.now()
+                };
+
+                launchPlans.add(plan);
+                return plan;
+            }
+
+            function moon_track() {
+
+                var now = Time.now().value();
+                var dayFraction = (now % 86400000) / 86400000.0;
+
+                var approxLat = 23.0 * Math.sin(dayFraction * 2.0 * Math.PI);
+                var approxLon = (dayFraction * 360.0) - 180.0;
+
+                var pos = {
+                    :object=>"Moon",
+                    :lat=>approxLat,
+                    :lon=>approxLon,
+                    :timestamp=>Time.now()
+                };
+
+                tracking[:moon] = pos;
+                return pos;
+            }
+
+            function ISS_track() {
+
+                var now = Time.now().value();
+                var orbitFraction = (now % 5400000) / 5400000.0;
+
+                var approxLat = 51.6 * Math.sin(orbitFraction * 2.0 * Math.PI);
+                var approxLon = (orbitFraction * 360.0) - 180.0;
+
+                var pos = {
+                    :object=>"ISS",
+                    :lat=>approxLat,
+                    :lon=>approxLon,
+                    :timestamp=>Time.now()
+                };
+
+                tracking[:iss] = pos;
+                return pos;
+            }
+
+            function set_tle(objectName as String, line1 as String, line2 as String) {
+                tleData[objectName] = {:line1=>line1, :line2=>line2};
+                return tleData[objectName];
+            }
+
+            function get_tle(objectName as String) {
+                return tleData[objectName];
+            }
+
+            function route_distance(points as Array) {
+
+                if (points == null) { return 0.0; }
+                if (points.size() < 2) { return 0.0; }
+
+                var total = 0.0;
+                var i = 1;
+
+                while (i < points.size()) {
+                    var a = points[i - 1];
+                    var b = points[i];
+
+                    total += haversine_distance(a[:lat], a[:lon], b[:lat], b[:lon]);
+                    i += 1;
+                }
+
+                return total;
+            }
+
+            function haversine_distance(lat1 as Float, lon1 as Float, lat2 as Float, lon2 as Float) {
+
+                var r = aeroSettings[:earthRadiusKm];
+
+                var dLat = to_rad(lat2 - lat1);
+                var dLon = to_rad(lon2 - lon1);
+
+                var a = Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
+                        Math.cos(to_rad(lat1)) * Math.cos(to_rad(lat2)) *
+                        Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0);
+
+                var c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a));
+                return r * c;
+            }
+
+            function to_rad(deg as Float) {
+                return deg * (Math.PI / 180.0);
+            }
+
+            function list_routes() {
+                return routes;
+            }
+
+            function list_launch_plans() {
+                return launchPlans;
+            }
+
+            function get_tracking(objectName as String) {
+                return tracking[objectName];
+            }
+
+            function estimate_flight_time(distanceKm as Float, speedKmH as Float) {
+                if (speedKmH == null || speedKmH <= 0.0) { return 0.0; }
+                return distanceKm / speedKmH;
+            }
+
+            function clear_routes() {
+                routes.clear();
+            }
+
+            function clear_launch_plans() {
+                launchPlans.clear();
+            }
+        }
+    }
+}
