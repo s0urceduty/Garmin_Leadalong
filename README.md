@@ -25,6 +25,15 @@ Beyond geometry creation, the submodule incorporates measurement and reporting m
 
 </details>
 
+<details>
+<summary>Aerospace</summary>
+
+The Leadalong.Aerospace submodule is a navigation-and-tracking layer that treats air and space movement as structured paths made from waypoints, timing, and simplified kinematics. It is designed to generate flight routes between airports, produce outbound route sets from a single origin, and represent rocket-style ascent trajectories as staged route objects that can be displayed, logged, or shared. The module keeps a consistent data model for routes, including route name, vehicle type, waypoint list, estimated distance, and optional parameters such as speed, cruise altitude, and ascent profile. This creates a reusable foundation for later expansion into weather-aware routing, restricted airspace avoidance, or mission planning overlays without redesigning the core storage format.
+
+For observation features, Aerospace also includes “track” style functions that return Earth-projected positions suitable for map display. Because Connect IQ apps are sandboxed and do not ship with full orbital mechanics libraries, the Moon and ISS trackers are designed as lightweight functions that either provide simplified estimates or accept external inputs. The Moon tracker can return a rough sublunar point derived from time-based approximation, which is adequate for basic observation planning and directional awareness. The ISS tracker is implemented as an interface point that can accept TLE data and return a placeholder until a full propagator is added later, keeping the module structure stable while allowing accuracy upgrades in future versions.
+
+</details>
+
 ------------------
 
 ![Routes](https://github.com/user-attachments/assets/8e83d27d-d71e-4922-acce-ecd70c76de6a)
